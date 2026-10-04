@@ -25,6 +25,69 @@
 
 ## 快速开始
 
+### Windows / Docker Desktop（PowerShell）
+
+本目录提供 `compose.yaml` 和 `start-desktop.ps1`。Docker Desktop 使用 Linux
+容器模式，在 PowerShell 进入本目录后执行：
+
+```powershell
+Copy-Item .env.example .env  # 仅首次执行；已有 .env 时不要覆盖
+notepad .env
+# 填写 MEMORY_LLM_BASE_URL / API_KEY / MODEL 和 PROXY_UPSTREAM_URL / API_KEY / MODEL。
+# 两组可以使用同一个模型服务；当前 Core 的模型接口需兼容 OpenAI Chat Completions。
+.\start-desktop.ps1
+```
+
+如需先启动管理界面、稍后再配置模型，可以运行
+`.\start-desktop.ps1 -AllowUnconfigured`。这时模型对话、记忆提取和 Wiki
+生成尚不可用。补齐 `.env` 后重新运行 `.\start-desktop.ps1` 即可应用配置。
+
+启动后打开 <http://localhost:8125>，选择 `Local Docker`（实例 ID 为
+`default`），使用 `.admin-key` 文件中的完整 Key 登录：
+
+```powershell
+Get-Content .admin-key | Set-Clipboard
+```
+
+先创建 Team，再在团队中创建 Agent 和一个 Task；可在成员管理中创建业务用户，
+之后用业务用户的 Key 接入客户端。Wiki、CodeGraph、Skill 等资产可在面板导入
+并绑定给 Agent。更详细的操作见仓库根目录 `INSTALL_CN.md`。
+
+例如接入 Claude Code（将模型名和用户 Key 换成实际值）：
+
+```powershell
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:8096/claude-code/default'
+$env:ANTHROPIC_AUTH_TOKEN = '<面板中创建的业务用户 Key>'
+claude --model '<PROXY_UPSTREAM_MODEL>'
+```
+
+首次会话选择 Team / Agent / Task，之后对话会经过 Proxy 自动读写记忆。
+其他客户端接入方式见根目录 `agents/` 下对应文档。
+
+日常管理（在本目录执行）：
+
+```powershell
+docker compose ps                         # 服务状态
+docker compose logs --tail 100 -f          # 日志
+docker compose stop                       # 停止，保留数据
+docker compose start                      # 启动已存在的容器
+.\start-desktop.ps1                        # 更新 .env 后重新应用配置
+docker compose down                       # 移除容器和网络，保留数据卷
+```
+
+Windows Compose 方案使用 SQLite；所有发布端口只绑定 `127.0.0.1`。
+三个服务设置了 `unless-stopped` 自动重启。数据卷为
+`tdai-memory-core-data`、`tdai-panel-data`、`tdai-proxy-data`；保留它们和
+`.admin-key`，不要用 `docker compose down -v`，除非确实需要删除数据。
+`.env`、`.admin-key` 和生成的 `.proxy-config/` 均已排除 Git 跟踪。
+
+本地方案还启用了 Proxy 的 SQLite 会话持久化，并将注入给 Agent 的工具地址设为
+`http://127.0.0.1:<PROXY_PORT>`，避免使用 Docker 内部 IP。云端计费地址设为空，
+不发送计费上报；当前公开镜像仍可能输出 `CREDIT_REPORT` 空 URL 错误，不影响
+模型回复、记忆写入或检索。
+
+### macOS / Linux
+
 ```bash
 cd TencentDB-Agent-Memory/deploy/global-images
 

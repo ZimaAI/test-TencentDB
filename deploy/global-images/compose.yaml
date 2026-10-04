@@ -1,0 +1,105 @@
+name: tdai-memory
+
+services:
+  memory-core:
+    image: ${MEMORY_CORE_IMAGE:-agentmemory/memory-core:latest}
+    container_name: tdai-memory-core
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MEMORY_CORE_PORT:-8420}:8420"
+    environment:
+      TDAI_GATEWAY_CONFIG: /data/config/tdai-gateway.yaml
+      TDAI_GATEWAY_HOST: 0.0.0.0
+      TDAI_GATEWAY_PORT: "8420"
+      TDAI_GATEWAY_API_KEY: ""
+      TDAI_DATA_DIR: /data/tdai-memory
+      TDAI_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
+      TDAI_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
+      TDAI_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      MEMORY_PROMPT_MODE: ${MEMORY_PROMPT_MODE:-code}
+      STORE_MODE: sqlite
+    volumes:
+      - memory-core-data:/data/tdai-memory
+      - ./desktop-gateway.yaml:/data/config/tdai-gateway.yaml:ro
+    healthcheck:
+      test: [CMD, curl, -fsS, "http://127.0.0.1:8420/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  memory-hub:
+    image: ${MEMORY_HUB_IMAGE:-agentmemory/memory-hub:latest}
+    container_name: tdai-memory-hub
+    restart: unless-stopped
+    depends_on:
+      memory-core:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PANEL_PORT:-8125}:8125"
+      - "127.0.0.1:${KNOWLEDGE_PORT:-8424}:8424"
+    environment:
+      PANEL_PORT: "8125"
+      KNOWLEDGE_PORT: "8424"
+      KNOWLEDGE_PUBLIC_BASE_URL: http://memory-hub:8424/v3
+      KNOWLEDGE_SERVICE_KEY: ${KNOWLEDGE_SERVICE_KEY:?Run start-desktop.ps1 first}
+      KNOWLEDGE_AUTH_TOKEN: ${KNOWLEDGE_SERVICE_KEY}
+      REMOTE_INSTANCE_ID: default
+      REMOTE_INSTANCE_NAME: Local Docker
+      REMOTE_INSTANCE_URL: http://memory-core:8420
+      REMOTE_INSTANCE_KEY: local
+      REMOTE_INSTANCE_PROXY_URL: http://127.0.0.1:${PROXY_PORT:-8096}
+      LLM_MODE: custom
+      LLM_PROTOCOL: ${MEMORY_LLM_PROTOCOL:-openai}
+      LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
+      LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
+      LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      KNOWLEDGE_LLM_BINDING_SYNC: "0"
+    volumes:
+      - panel-data:/data/knowledge
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8125/health && curl -fsS http://127.0.0.1:8424/health"]
+      interval: 10s
+      timeout: 8s
+      retries: 15
+      start_period: 45s
+    logging: *logging
+
+  proxy:
+    image: ${PROXY_IMAGE:-agentmemory/memory-proxy:latest}
+    container_name: tdai-proxy
+    restart: unless-stopped
+    depends_on:
+      memory-core:
+        condition: service_healthy
+      memory-hub:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-8096}:8096"
+    environment:
+      PROXY_UPSTREAM_URL: ${PROXY_UPSTREAM_URL:-}
+      PROXY_UPSTREAM_API_KEY: ${PROXY_UPSTREAM_API_KEY:-}
+      PROXY_UPSTREAM_MODEL: ${PROXY_UPSTREAM_MODEL:-}
+    volumes:
+      - ./.proxy-config/config.yaml:/data/config.yaml:ro
+      - proxy-data:/data/tdai-memory-proxy
+    healthcheck:
+      test: [CMD, curl, -fsS, "http://127.0.0.1:8096/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *logging
+
+volumes:
+  memory-core-data:
+    name: ${MEMORY_CORE_VOLUME:-tdai-memory-core-data}
+  panel-data:
+    name: ${PANEL_VOLUME:-tdai-panel-data}
+  proxy-data:
+    name: tdai-proxy-data
