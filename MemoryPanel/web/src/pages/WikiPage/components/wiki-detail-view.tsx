@@ -77,6 +77,8 @@ export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
 
   const source = sources.find((s) => s.wiki_id === selectedWikiId);
   const wikiName = source?.name ?? '';
+  const isIngesting = source?.status === 'pending' || source?.status === 'processing'
+    || (displayIngestState.active && displayIngestState.wikiId === selectedWikiId);
 
   // 选中 Wiki 已不存在（被删除或刷新失败）时给出可返回的空态，避免死胡同
   if (!source) {
@@ -213,6 +215,15 @@ export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
             </Card.Body>
           </Card>
         )}
+
+      {isIngesting && (
+        <Alert type="info">
+          {t(pages.length > 0 ? 'wiki.detail.publishedDuringIngest' : 'wiki.detail.awaitingPublication')}
+        </Alert>
+      )}
+      {source.status === 'failed' && pages.length > 0 && (
+        <Alert type="warning">{t('wiki.detail.publishedAfterFailure')}</Alert>
+      )}
 
       <Tabs
         activeId={activeTab}

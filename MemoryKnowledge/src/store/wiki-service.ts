@@ -12,14 +12,12 @@
  *   lib 层 cascadeDeleteWikiPagesWithRefs 做引用级联。
  */
 
-import { join, resolve, normalize } from "node:path";
+import { join, resolve, normalize, relative, sep } from "node:path";
 import {
   rmSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
-  readdirSync,
-  statSync,
   existsSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -41,6 +39,8 @@ import {
   listSources,
   deleteSources,
   sha256,
+  listPublishedPages,
+  readPublishedPage,
   type SourceStatus,
 } from "../engines/wiki/index-db.js";
 
@@ -645,22 +645,13 @@ export class WikiService {
   // 文件层 — page/* （wiki/ 下的 processed page）
   // ═══════════════════════════════════════════════════════════════════
 
-  /**
-   * 列出 wiki/ 下的 page 文件（recursive 扫描 .md 取 frontmatter）。
-   * status≠ready 时返回空数组。
-   */
+  /** 列出最近一次提交的页面；摄入任务状态不影响已发布内容的可读性。 */
   pageLs(serviceId: string, teamId: string, wikiId: string): { id: string; title: string; type: string; path: string; description?: string; locked?: boolean }[] | null {
     const row = this.store.getWiki(serviceId, teamId, wikiId);
     if (!row) return null;
-    if (row.status !== "ready") return [];
-
     const projectPath = this.dirFor(serviceId, teamId, wikiId);
-    const wikiDir = join(projectPath, "wiki");
-    if (!existsSync(wikiDir)) return [];
-
-    const items: { id: string; title: string; type: string; path: string; description?: string; locked?: boolean }[] = [];
-    this.scanPagesRecursive(wikiDir, wikiDir, items);
-    return items;
+    if (!existsSync(join(projectPath, "index.db"))) return [];
+    return listPublishedPages(getReadDb(wikiId, projectPath));
   }
 
   /** 读单个 page 原文。ref 可以是 page id 或 relPath。 */
@@ -669,13 +660,10 @@ export class WikiService {
     if (!row) return null;
 
     const projectPath = this.dirFor(serviceId, teamId, wikiId);
-    const safe = this.resolvePageRef(projectPath, ref);
+    const safe = this.resolvePageRef(projectPath, ref, { allowMissing: true });
     if (!safe) return null;
-    try {
-      return readFileSync(safe, "utf-8");
-    } catch {
-      return null;
-    }
+    if (!existsSync(join(projectPath, "index.db"))) return null;
+    return readPublishedPage(getReadDb(wikiId, projectPath), this.absToPageRef(projectPath, safe));
   }
 
   /**
@@ -705,17 +693,12 @@ export class WikiService {
       if (!safe) return "invalid_path";
       safePaths.push(safe);
     }
-    const items: PageReadItem[] = [];
-    for (let i = 0; i < refs.length; i++) {
-      const ref = refs[i];
-      try {
-        const content = readFileSync(safePaths[i], "utf-8");
-        items.push({ ref, content });
-      } catch {
-        items.push({ ref, not_found: true });
-      }
-    }
-    return items;
+    if (!existsSync(join(projectPath, "index.db"))) return refs.map((ref) => ({ ref, not_found: true }));
+    const db = getReadDb(wikiId, projectPath);
+    return db.transaction(() => refs.map((ref, i): PageReadItem => {
+      const content = readPublishedPage(db, this.absToPageRef(projectPath, safePaths[i]));
+      return content === null ? { ref, not_found: true } : { ref, content };
+    }))();
   }
 
   /**
@@ -930,7 +913,7 @@ export class WikiService {
 
     // resolve 成绝对路径，避免 projectPath 是相对路径时比较失败。
     const wikiDir = resolve(projectPath, "wiki");
-    const wikiDirSep = wikiDir.endsWith("/") ? wikiDir : wikiDir + "/";
+    const wikiDirSep = wikiDir + sep;
 
     // 先按原样尝试，再尝试补 .md 扩展。
     const candidates = cleanRef.endsWith(".md") ? [cleanRef] : [cleanRef + ".md", cleanRef];
@@ -955,54 +938,12 @@ export class WikiService {
   /** 把 wiki/.../page.md 绝对路径转换回 ref（如 "concepts/redis"）。 */
   private absToPageRef(projectPath: string, abs: string): string {
     const wikiDir = resolve(projectPath, "wiki");
-    const prefix = wikiDir.endsWith("/") ? wikiDir : wikiDir + "/";
-    if (!abs.startsWith(prefix)) return abs;
-    return abs.slice(prefix.length).replace(/\.md$/, "");
+    return relative(wikiDir, abs).replace(/\\/g, "/").replace(/\.md$/, "");
   }
 
   private isForbiddenPageRef(ref: string): boolean {
     const cleanRef = ref.replace(/^wiki\//, "").replace(/\.md$/, "");
     return PAGE_FORBIDDEN_REFS.has(cleanRef) || PAGE_FORBIDDEN_REFS.has(`wiki/${cleanRef}`);
-  }
-
-  private scanPagesRecursive(
-    baseDir: string,
-    dir: string,
-    out: { id: string; title: string; type: string; path: string; description?: string; locked?: boolean }[],
-  ): void {
-    if (!existsSync(dir)) return;
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      let st;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) {
-        if (entry === "media") continue;
-        this.scanPagesRecursive(baseDir, full, out);
-        continue;
-      }
-      if (!entry.endsWith(".md")) continue;
-      let content = "";
-      try {
-        content = readFileSync(full, "utf-8");
-      } catch {
-        continue;
-      }
-      const rel = full.slice(baseDir.length + 1).replace(/\\/g, "/");
-      const id = rel.replace(/\.md$/, "");
-      const fm = parseFrontmatterMin(content);
-      out.push({
-        id,
-        title: fm.title || entry.replace(/\.md$/, "").replace(/-/g, " "),
-        type: fm.type || "other",
-        path: `wiki/${rel}`,
-        ...(fm.description ? { description: fm.description } : {}),
-        locked: fm.locked,
-      });
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════

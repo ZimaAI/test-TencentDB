@@ -37,6 +37,8 @@ import {
   deleteSources,
   classifySources,
   sha256,
+  hasPublishedSnapshot,
+  readPublishedPage,
   type SourceStatus,
 } from "./index-db.js";
 import { createLogger } from "../../logger.js";
@@ -44,6 +46,7 @@ import { withSpan } from "../../telemetry.js";
 import { getIngestConcurrency } from "../../config.js";
 import { slugify } from "./ingest-v2/slug.js";
 import { DEFAULT_SCHEMA, DEFAULT_PURPOSE } from "./ingest-v2/template.js";
+import { isInsideRoot } from "./ingest-v2/safe-path.js";
 
 const log = createLogger("wiki-mgr");
 
@@ -184,7 +187,7 @@ export interface PageGraph {
   degree: Map<string, number>;
 }
 
-/** 页元数据（读模型；正文不在库，snippet 为写入时预生成的静态摘要）。 */
+/** 页元数据（正文按需从 page_content 读取，snippet 为发布时生成的摘要）。 */
 interface PageMeta {
   id: string;
   title: string;
@@ -318,7 +321,7 @@ const SNIPPET_CONTEXT = 80;
 /**
  * 预生成页摘要（写入 page_meta.snippet）：优先 frontmatter description，
  * 否则取正文（去 frontmatter/标题）前 SNIPPET_CONTEXT 个字符。
- * 正文不入库，检索时直接返回该静态摘要（消费者主要是 AI，无需按 query 动态高亮）。
+ * 检索时只加载该静态摘要，避免将全部正文读入内存。
  */
 function makeSnippet(page: WikiPage): string {
   if (page.description) return page.description;
@@ -390,25 +393,62 @@ function ftsSearch(db: DatabaseType.Database, query: string, limit: number): Arr
   return rows.map((r) => ({ id: r.page_id, score: -r.score }));
 }
 
-/** 事务内重建三张索引表（wiki_fts + page_meta + graph_edge）。由 withWriteDb 调用。 */
+/** 同一事务发布索引、图谱、页面列表和正文。由 withWriteDb 调用。 */
 function writeIndex(db: DatabaseType.Database, pages: WikiPage[]): void {
   db.prepare("DELETE FROM wiki_fts").run();
   db.prepare("DELETE FROM page_meta").run();
   db.prepare("DELETE FROM graph_edge").run();
+  db.prepare("DELETE FROM page_content").run();
 
   const insFts = db.prepare("INSERT INTO wiki_fts(page_id, title_tok, content_tok) VALUES (?,?,?)");
   const insMeta = db.prepare(
     "INSERT INTO page_meta(page_id, title, type, rel_path, snippet) VALUES (?,?,?,?,?)",
   );
   const insEdge = db.prepare("INSERT OR IGNORE INTO graph_edge(source_id, target_id) VALUES (?,?)");
+  const insContent = db.prepare(
+    "INSERT INTO page_content(page_id, content, description, locked) VALUES (?,?,?,?)",
+  );
 
   for (const p of pages) {
     // wiki_fts + page_meta 收录所有页（含 hidden 类型，供检索）。
     insFts.run(p.id, tokenize(p.title).join(" "), tokenize(p.content).join(" "));
     insMeta.run(p.id, p.title, p.type, p.relPath, makeSnippet(p));
+    const fm = p.content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+    insContent.run(p.id, p.content, p.description ?? "", /^locked:\s*true\s*$/m.test(fm) ? 1 : 0);
   }
   // graph_edge 只在 visible 页间。
   for (const e of resolveEdges(pages)) insEdge.run(e.source, e.target);
+  db.prepare(`INSERT INTO wiki_publication(id, revision, published_at) VALUES (1, 1, ?)
+    ON CONFLICT(id) DO UPDATE SET revision = revision + 1, published_at = excluded.published_at`)
+    .run(new Date().toISOString());
+}
+
+/**
+ * 旧库升级只能补齐已索引页面的正文，不能把工作目录中尚未提交的内容重新建索引。
+ * 旧版本没有保存正文副本：文件与旧 FTS 不匹配时无法还原，保留原索引并显式报错。
+ */
+function migratePublishedContent(projectPath: string): void {
+  withWriteDb(projectPath, (db) => {
+    if (hasPublishedSnapshot(db)) return;
+    const rows = db.prepare(`SELECT m.page_id, m.rel_path, f.content_tok
+      FROM page_meta m JOIN wiki_fts f ON f.page_id = m.page_id`).all() as
+      Array<{ page_id: string; rel_path: string; content_tok: string }>;
+    const count = (db.prepare("SELECT COUNT(*) AS n FROM page_meta").get() as { n: number }).n;
+    if (rows.length !== count) throw new Error("Legacy wiki index is incomplete; ingest again to publish content");
+    const insert = db.prepare("INSERT OR REPLACE INTO page_content(page_id, content, description, locked) VALUES (?,?,?,?)");
+    for (const row of rows) {
+      const fullPath = join(projectPath, row.rel_path);
+      if (!isInsideRoot(join(projectPath, "wiki"), fullPath)) throw new Error("Invalid legacy page path");
+      const content = readFileSync(fullPath, "utf8");
+      if (tokenize(content).join(" ") !== row.content_tok) {
+        throw new Error("Legacy wiki files differ from the committed index; ingest again to publish content");
+      }
+      const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+      insert.run(row.page_id, content, extractFrontmatter(content).description, /^locked:\s*true\s*$/m.test(fm) ? 1 : 0);
+    }
+    db.prepare("INSERT INTO wiki_publication(id, revision, published_at) VALUES (1, 1, ?)")
+      .run(new Date().toISOString());
+  });
 }
 
 /** 从读连接加载读模型：页元数据表 + 图（graph_edge 构建的内存图）。 */
@@ -829,7 +869,7 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
       else if (entry.endsWith(".md")) {
         try {
           const content = readFileSync(full, "utf-8");
-          const rel = full.slice(baseDir.length + 1);
+          const rel = relative(baseDir, full).replace(/\\/g, "/");
           const id = rel.replace(/\.md$/, "").replace(/\\/g, "/");
           const fm = extractFrontmatter(content);
           pages.push({ id, title: fm.title || basename(entry, ".md").replace(/-/g, " "), type: fm.type, path: full, relPath: `wiki/${rel}`, content, sources: fm.sources, links: extractWikilinks(content), description: fm.description });
@@ -906,30 +946,23 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
   }
 
   loadState();
-  // 启动时恢复 BM25 搜索索引（重建每个 ready wiki 的 index.db / pagesMap / searchEngines）。
-  // loadState 只恢复元数据（sources map）；索引数据虽持久，但为对齐磁盘正文并避免
-  // search / pages / graph 在重启后返回空，仍从磁盘扫描重建一次。
+  // 已发布快照跨重启保留，包括失败/中断的摄入；禁止扫描工作目录覆盖已提交内容。
+  // 旧版尚无正文快照时，只迁移与已提交索引匹配的文件，不发布工作目录中的新内容。
   log.info("Restoring wiki indexes", { count: sources.size });
   let restored = 0;
   let failed = 0;
   for (const [name, state] of sources.entries()) {
-    if (state.status !== "ready") {
-      log.debug("Skip non-ready wiki source", { name, status: state.status });
-      continue;
-    }
-    const wikiDir = join(state.path, "wiki");
-    if (!existsSync(wikiDir)) {
-      log.warn("Wiki dir missing on disk; mark error and skip restore", { name, path: state.path });
-      state.status = "error";
-      state.error = `wiki dir not found: ${wikiDir}`;
-      failed++;
-      continue;
-    }
     try {
-      const pages = scanWikiDir(state.path);
-      rebuildIndex(name, pages);
+      if (!existsSync(join(state.path, "index.db"))) {
+        // 兼容尚未使用 index.db 的旧 ready Wiki，失败/中断状态不从磁盘发布。
+        if (state.status !== "ready") continue;
+        rebuildIndex(name, scanWikiDir(state.path));
+      } else {
+        initIndexDb(state.path);
+        if (!hasPublishedSnapshot(getReadDb(name, state.path))) migratePublishedContent(state.path);
+      }
       restored++;
-      log.info("Restored wiki index", { name, pageCount: pages.length });
+      log.info("Restored published wiki index", { name });
     } catch (err) {
       failed++;
       log.error("Failed to restore wiki index", { name, error: err instanceof Error ? err.message : String(err) });
@@ -945,9 +978,16 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
     const state: WikiSourceState = { name: config.name, path: config.path, status: "scanning" };
     sources.set(config.name, state);
     try {
-      const pages = scanWikiDir(config.path);
-      rebuildIndex(config.name, pages);
-      state.status = "ready"; state.pageCount = pages.length; state.lastSyncAt = new Date().toISOString();
+      initIndexDb(config.path);
+      const db = getReadDb(config.name, config.path);
+      if (!hasPublishedSnapshot(db)) {
+        const count = (db.prepare("SELECT COUNT(*) AS n FROM page_meta").get() as { n: number }).n;
+        if (count > 0) migratePublishedContent(config.path);
+        else rebuildIndex(config.name, scanWikiDir(config.path));
+      }
+      const publishedDb = getReadDb(config.name, config.path);
+      state.pageCount = (publishedDb.prepare("SELECT COUNT(*) AS n FROM page_meta").get() as { n: number }).n;
+      state.status = "ready"; state.lastSyncAt = new Date().toISOString();
     } catch (err) { state.status = "error"; state.error = String(err); }
     persist();
     return state;
@@ -972,7 +1012,16 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
   }
 
   function init(config: WikiSourceConfig): WikiSourceState {
+    const isNew = !sources.has(config.name) && !existsSync(join(config.path, "wiki"));
     initWikiProject(config.path);
+    if (isNew) {
+      // 初始化的 schema/purpose/index 模板不是摄入成果。首次发布前查询保持空态。
+      const state: WikiSourceState = { name: config.name, path: config.path, status: "ready", pageCount: 0 };
+      sources.set(config.name, state);
+      rebuildIndex(config.name, []);
+      persist();
+      return state;
+    }
     return register(config);
   }
 
@@ -981,6 +1030,8 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
     if (!state) throw new Error(`Not found: ${name}`);
     const projectPath = state.path;
     initIndexDb(projectPath); // 确保 index.db 存在（register 通常已建，幂等）
+    state.status = "scanning";
+    persist(); // 中途重启可识别为 interrupted，恢复时只使用已发布数据库快照。
 
     // 读上次 source 状态（增量判断基线）——须在抽取前读取。
     let oldStates = new Map<string, { sha256: string; status: SourceStatus }>();
@@ -1005,17 +1056,19 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
     state.status = "scanning";
     const t0 = Date.now();
     try {
-      const pages = scanWikiDir(projectPath);
+      const attempted = outcome.processed.length;
+      const failed = outcome.processed.filter((p) => !p.ok);
+      const allFailed = attempted > 0 && failed.length === attempted;
+      const pages = allFailed ? [] : scanWikiDir(projectPath);
       withWriteDb(projectPath, (db) => {
-        writeIndex(db, pages);
+        // 全部失败只记录源文件错误，保留上一次成功发布的内容。
+        if (!allFailed) writeIndex(db, pages);
         for (const p of outcome.processed) recordSourceIngestResult(db, p);
-        if (outcome.deletedSources.length > 0) deleteSources(db, outcome.deletedSources);
+        if (!allFailed && outcome.deletedSources.length > 0) deleteSources(db, outcome.deletedSources);
       });
       evictWikiDb(name); // 丢弃可能持旧快照的读连接
 
-      const attempted = outcome.processed.length;
-      const failed = outcome.processed.filter((p) => !p.ok);
-      if (attempted > 0 && failed.length === attempted) {
+      if (allFailed) {
         const first = failed[0];
         throw new Error(
           `all source documents failed to ingest${first ? `; first failure: ${first.filename}: ${first.error ?? "unknown"}` : ""}`,
@@ -1082,20 +1135,7 @@ export function createWikiSourceManager(dataDir: string): WikiSourceManager {
         return null;
       }
 
-      // 支持多种格式：
-      //   "wiki/concepts/l0-录入.md" → 完整 relPath
-      //   "concepts/l0-录入.md"      → 去掉 wiki/ 前缀
-      //   "concepts/l0-录入"         → id 格式（不带 .md）
-      const cleanPath = relPath.replace(/^wiki\//, "");
-      const base = join(state.path, "wiki");
-      let fullPath = join(base, cleanPath);
-      if (!fullPath.startsWith(base)) return null;
-      // 先直接尝试，再补 .md
-      try { return readFileSync(fullPath, "utf-8"); } catch {}
-      if (!cleanPath.endsWith(".md")) {
-        try { return readFileSync(fullPath + ".md", "utf-8"); } catch {}
-      }
-      return null;
+      return readPublishedPage(getReadDb(name, state.path), relPath);
     },
     getPages: (name) => {
       const state = sources.get(name);

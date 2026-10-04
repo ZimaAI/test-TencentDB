@@ -457,9 +457,6 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
     const row = wikiService.getById(serviceId, wikiId);
     if (!row) return c.json(wrapError(404, "wiki not found"), 404);
 
-    if (row.status !== "ready") {
-      return c.json(wrapOk({ nodes: [], edges: [], communities: [] }));
-    }
     const graphData = wikiMgr.graph(wikiId);
     return c.json(wrapOk(graphData));
   });
@@ -476,10 +473,6 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
 
     const row = wikiService.getById(serviceId, wikiId);
     if (!row) return c.json(wrapError(404, "wiki not found"), 404);
-
-    if (row.status !== "ready") {
-      return c.json(wrapOk({ results: [], links: [], count: 0 }));
-    }
 
     const limit = typeof body.limit === "number" ? body.limit : 20;
 

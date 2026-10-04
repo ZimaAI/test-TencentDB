@@ -320,17 +320,11 @@ async function executeWikiTool(
       if (typeof query !== "string" || !query) {
         return Response.json(wrapError(400, "query is required"), { status: 400 });
       }
-      if (row.status !== "ready") {
-        return Response.json(wrapOk({ results: [], links: [], count: 0 }));
-      }
       const limit = typeof params.limit === "number" ? params.limit : 20;
       const response = wikiMgr.search(wiki_id, query, limit);
       return Response.json(wrapOk(response));
     }
     case "list_pages": {
-      if (row.status !== "ready") {
-        return Response.json(wrapOk({ items: [] }));
-      }
       const items = wikiService.pageLs(serviceId, team_id, wiki_id);
       if (items === null) return Response.json(wrapError(404, "wiki not found"), { status: 404 });
       return Response.json(wrapOk({ items }));
@@ -340,16 +334,11 @@ async function executeWikiTool(
       if (!Array.isArray(refs) || refs.length === 0) {
         return Response.json(wrapError(400, "refs is required (non-empty array)"), { status: 400 });
       }
-      if (row.status !== "ready") {
-        return Response.json(wrapOk({ items: [] }));
-      }
       const result = wikiService.pageReadMany(serviceId, team_id, wiki_id, refs as string[]);
+      if (result === "invalid_path") return Response.json(wrapError(400, "invalid path"), { status: 400 });
       return Response.json(wrapOk({ items: result }));
     }
     case "get_graph": {
-      if (row.status !== "ready") {
-        return Response.json(wrapOk({ nodes: [], edges: [], communities: [] }));
-      }
       const graphData = wikiMgr.graph(wiki_id);
       return Response.json(wrapOk(graphData));
     }

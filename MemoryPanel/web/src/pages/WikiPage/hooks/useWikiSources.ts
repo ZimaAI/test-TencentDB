@@ -170,6 +170,9 @@ export function useWikiSources() {
   // 旧 tab 的数据会覆盖新 tab 的数据。每次 fetch 递增序号，
   // 响应回来时校验序号是否仍是最新，不是就丢弃。
   const fetchSeqRef = useRef(0);
+  const detailSeqRef = useRef(0);
+  const selectedWikiIdRef = useRef(selectedWikiId);
+  selectedWikiIdRef.current = selectedWikiId;
 
   const fetchSources = useCallback(async () => {
     if (!activeTeamId) {
@@ -216,6 +219,7 @@ export function useWikiSources() {
   useEffect(() => {
     if (prevTeamIdRef.current === activeTeamId) return;
     prevTeamIdRef.current = activeTeamId;
+    detailSeqRef.current++;
     setSubView('list');
     setSelectedWikiId('');
     setActiveTab('overview');
@@ -230,6 +234,7 @@ export function useWikiSources() {
   }, [activeTeamId]);
 
   const fetchDetail = useCallback(async (wikiId: string) => {
+    const seq = ++detailSeqRef.current;
     setGraphLoading(true);
     // 两个子请求各自兜底，外层 catch 抓不到；用标志位感知任一失败后统一提示，
     // 避免加载失败时详情页静默空白、用户无从判断。
@@ -242,13 +247,15 @@ export function useWikiSources() {
         }),
         knowledgeApi.wiki.pages(wikiId).catch(() => {
           hadError = true;
-          return [];
+          return null;
         }),
       ]);
-      setGraphData(g);
-      setPages(Array.isArray(p) ? p : (p as { pages?: WikiPage[] } | null)?.pages || []);
+      if (seq !== detailSeqRef.current || wikiId !== selectedWikiIdRef.current) return;
+      // 刷新失败时保留当前已发布内容，避免把暂时的请求失败显示为空 Wiki。
+      if (g !== null) setGraphData(g);
+      if (p !== null) setPages(Array.isArray(p) ? p : (p as { pages?: WikiPage[] })?.pages || []);
     } finally {
-      setGraphLoading(false);
+      if (seq === detailSeqRef.current) setGraphLoading(false);
     }
     if (hadError) tea.notify.error(t('wiki.notify.loadDetailFailed'));
   }, []);
@@ -437,11 +444,12 @@ export function useWikiSources() {
           }));
           tea.notify.success(t('wiki.notify.ingestComplete', { count: result.ingested }));
           fetchSources();
-          fetchDetail(wikiId);
+          if (selectedWikiIdRef.current === wikiId) void fetchDetail(wikiId);
         },
         onError: (err) => {
           setIngestState((prev) => ({ ...prev, active: false, detail: t('wiki.ingest.error', { error: err }) }));
           tea.notify.error(err || t('wiki.notify.ingestFailed'));
+          if (selectedWikiIdRef.current === wikiId) void fetchDetail(wikiId);
         },
       },
       activeTeamId ?? '',

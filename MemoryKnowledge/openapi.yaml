@@ -786,7 +786,7 @@ components:
         status:
           type: string
           enum: [draft, pending, processing, ready, failed]
-          description: draft = 建壳未加工（仅 create 一次性出现）；pending/processing = in-flight；ready = 可查询；failed = 可重试。
+          description: draft = 建壳未加工；pending/processing = 摄入中；ready = 最近一次摄入成功；failed = 可重试。已有已发布内容在排队、摄入和失败期间仍可查询，新内容在摄入提交后可见。
         sync_error:
           type: string
           nullable: true

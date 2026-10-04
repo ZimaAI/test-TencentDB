@@ -4,7 +4,8 @@
  * 每个 wiki 一个独立 SQLite 文件 `index.db`，放在该 wiki 的数据目录下（与正文 `.md`
  * 同目录同生命周期），承载本 wiki 的全部私有索引数据：
  *   - `wiki_fts`   FTS5 预分词倒排（BM25 全文检索）
- *   - `page_meta`  页元数据（title/type/rel_path/snippet；正文不入库，留磁盘）
+ *   - `page_meta` / `page_content` 已发布页元数据与正文（磁盘文件用于摄入加工）
+ *   - `wiki_publication` 最近一次原子发布的版本，空 Wiki 也有发布记录
  *   - `graph_edge` 知识图谱有向边（多跳 BFS 用）
  *   - `source`     源文件一等实体（增量判断 + 生命周期；DDL 本轮建好，读写方法见 003 阶段）
  *
@@ -68,7 +69,7 @@ function applyPragmas(db: Database.Database): void {
   db.pragma("busy_timeout = 5000"); // 写锁最多等 5s，避免偶发 SQLITE_BUSY
 }
 
-/** 建 4 张表（幂等）。仅在 initIndexDb（wiki 显式创建）时调用。 */
+/** 建表及兼容升级（幂等）。在创建和启动恢复时调用。 */
 function initSchema(db: Database.Database): void {
   // ① BM25：FTS5 虚拟表。存预分词后的空格 token 串，中文 bigram 逻辑留在 JS tokenize()，
   //    FTS5 用 unicode61 仅按空格/标点切（与 __tests__/bm25-comparison 验证过的配置一致）。
@@ -81,7 +82,7 @@ function initSchema(db: Database.Database): void {
      );`,
   );
 
-  // ② 页元数据（搜索结果返回用，不含正文；正文在磁盘 .md）。
+  // ② 页元数据（检索时无需加载 page_content 中的正文）。
   db.exec(
     `CREATE TABLE IF NOT EXISTS page_meta (
        page_id   TEXT PRIMARY KEY,
@@ -91,6 +92,19 @@ function initSchema(db: Database.Database): void {
        snippet   TEXT
      );`,
   );
+
+  // 正文与 FTS/元数据/图谱在同一事务发布，读请求不接触摄入中的工作文件。
+  db.exec(`CREATE TABLE IF NOT EXISTS page_content (
+    page_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    description TEXT NOT NULL,
+    locked INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS wiki_publication (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL,
+    published_at TEXT NOT NULL
+  );`);
 
   // ③ 图谱有向边（多跳 BFS 用；查询时读进内存构建小图，图谱数据小）。
   db.exec(
@@ -123,7 +137,7 @@ function dbPath(wikiDir: string): string {
 }
 
 /**
- * ★ 显式建库：在 wiki 创建接口里调一次，建好 4 张表。幂等（IF NOT EXISTS）。
+ * ★ 显式建库/升级：创建与恢复时幂等建表（IF NOT EXISTS）。
  * 此后 getReadDb / withWriteDb 只打开已存在的库、不建表。
  */
 export function initIndexDb(wikiDir: string): void {
@@ -157,7 +171,7 @@ export function getReadDb(wikiId: string, wikiDir: string): Database.Database {
 
 /**
  * 写连接（ingest/sync/rawWrite）：独立创建，事务内完成后 checkpoint + close，不进池。
- * `fn` 内的重建（FTS5 + graph_edge + page_meta + source）在同一事务里原子完成。
+ * `fn` 内的索引、正文快照、发布版本及 source 状态在同一事务里原子完成。
  */
 export function withWriteDb<T>(wikiDir: string, fn: (db: Database.Database) => T): T {
   const path = dbPath(wikiDir);
@@ -183,6 +197,36 @@ export function evictWikiDb(wikiId: string): void {
 /** 当前读池中的连接数（测试/可观测用）。 */
 export function readPoolSize(): number {
   return readPool.size;
+}
+
+export function hasPublishedSnapshot(db: Database.Database): boolean {
+  return !!db.prepare("SELECT 1 FROM wiki_publication WHERE id = 1").get();
+}
+
+export interface PublishedPageEntry {
+  id: string;
+  title: string;
+  type: string;
+  path: string;
+  description: string;
+  locked: boolean;
+}
+
+export function listPublishedPages(db: Database.Database): PublishedPageEntry[] {
+  const rows = db.prepare(`SELECT m.page_id AS id, m.title, m.type, m.rel_path AS path,
+    c.description, c.locked FROM page_meta m JOIN page_content c USING (page_id)
+    ORDER BY m.page_id`).all() as Array<Omit<PublishedPageEntry, "locked"> & { locked: number }>;
+  return rows.map((r) => ({ ...r, locked: !!r.locked }));
+}
+
+/** 接受 id / wiki 相对路径。只查已发布正文，不回退到正在被改写的磁盘文件。 */
+export function readPublishedPage(db: Database.Database, ref: string): string | null {
+  const id = ref.replace(/\\/g, "/").replace(/^wiki\//, "").replace(/\.md$/, "");
+  if (!id || id.startsWith("/") || id.includes("..") || id.includes(":")) return null;
+  const row = db.prepare("SELECT content FROM page_content WHERE page_id = ?").get(id) as
+    | { content: string }
+    | undefined;
+  return row?.content ?? null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
