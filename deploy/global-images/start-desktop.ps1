@@ -18,6 +18,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Invalid Compose configuration.' }
     $proxyEnv = $resolved.services.proxy.environment
     $coreEnv = $resolved.services.'memory-core'.environment
+    $langfuseEnabled = $coreEnv.LANGFUSE_ENABLED -eq 'true'
+    if ($langfuseEnabled) {
+        foreach ($name in @('LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY')) {
+            if ([string]::IsNullOrWhiteSpace($coreEnv.$name)) { throw "Fill $name in .env before enabling Langfuse (LANGFUSE_HOST uses LANGFUSE_BASE_URL)." }
+        }
+        $langfuseUri = $null
+        if (![Uri]::TryCreate($coreEnv.LANGFUSE_HOST, [UriKind]::Absolute, [ref]$langfuseUri) -or $langfuseUri.Scheme -notin @('http', 'https')) {
+            throw 'LANGFUSE_BASE_URL must be an absolute HTTP(S) URL.'
+        }
+    }
     $required = @($coreEnv.TDAI_LLM_BASE_URL, $coreEnv.TDAI_LLM_API_KEY, $coreEnv.TDAI_LLM_MODEL,
         $proxyEnv.PROXY_UPSTREAM_URL, $proxyEnv.PROXY_UPSTREAM_API_KEY, $proxyEnv.PROXY_UPSTREAM_MODEL)
     $unconfigured = @($required | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq 'REPLACE_ME' }).Count -gt 0
@@ -48,6 +58,12 @@ try {
     # Persist session bindings before the first request, so every client type
     # can resolve its identity through memory-bridge (including after restart).
     $template += "`nstorage:`n  enabled: true`n  backend: sqlite`n  sqlite:`n    dbPath: /data/tdai-memory-proxy/storage.db`n"
+    # Proxy reads Langfuse from YAML; core and knowledge read environment variables.
+    $lfHost = ConvertTo-Json -InputObject ([string]$coreEnv.LANGFUSE_HOST).TrimEnd('/') -Compress
+    $lfPublic = ConvertTo-Json -InputObject ([string]$coreEnv.LANGFUSE_PUBLIC_KEY) -Compress
+    $lfSecret = ConvertTo-Json -InputObject ([string]$coreEnv.LANGFUSE_SECRET_KEY) -Compress
+    $lfEnabled = $langfuseEnabled.ToString().ToLowerInvariant()
+    $template += "`nlangfuse:`n  enabled: $lfEnabled`n  host: $lfHost`n  publicKey: $lfPublic`n  secretKey: $lfSecret`n  debug: false`n"
     if ($template -match '\$\{|\$\(bool') { throw 'Unresolved proxy template variables.' }
     New-Item -ItemType Directory -Path .proxy-config -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.proxy-config/config.yaml'), $template, [Text.UTF8Encoding]::new($false))

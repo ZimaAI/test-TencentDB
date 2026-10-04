@@ -307,6 +307,38 @@ gateway_endpoint）就把 `MEMORY_HUB_PROXY_PUBLIC_URL` 显式设为空字符串
 
 ## 常见问题
 
+### Docker Desktop 接入 Langfuse
+
+项目已有三条上报链路：MemoryCore 的记忆/技能 LLM 调用、MemoryKnowledge
+的知识处理，以及 MemoryProxy 的代理对话。Windows Compose 部署在 `.env` 设置：
+
+```dotenv
+LANGFUSE_ENABLED=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
+LANGFUSE_SECRET_KEY=sk-lf-your-project-secret
+```
+
+在本目录执行 `./start-desktop.ps1`，重建容器并检查健康状态。Core 使用
+`LANGFUSE_HOST`，知识服务使用 `LANGFUSE_BASE_URL`；Compose 将上述地址映射给两者，
+启动脚本将相同配置写入 Proxy 的 `.proxy-config/config.yaml`。这两个本地密钥文件
+均被 Git 忽略，真实密钥不要写入模板或提交。启用后已有埋点会将对话输入、输出和
+调用元数据发送到指定 Langfuse 项目。
+
+执行 `./verify-langfuse.ps1` 会从三个容器各发送一个标记为 `integration-smoke`
+的合成 generation，并通过云端 Observations v2 API 回查。测试不调用模型，
+成功时输出各条 trace 的链接。它验证容器配置、鉴权、导出和云端入库；真实业务
+埋点需在代理对话或记忆/知识任务发生后查看。
+
+Core 的直接 OTLP 导出器通过 `x-langfuse-ingestion-version=4` 使用实时入库路径，
+参见 [Langfuse Observations API](https://langfuse.com/docs/api-and-data-platform/features/observations-api)。
+旧版自建实例可在 `.env` 设置 `LANGFUSE_OTLP_HEADERS=` 清除此请求头；
+上述回查脚本要求支持 Observations v2 的 Langfuse v4 / Cloud。
+
+停用时将 `LANGFUSE_ENABLED=false`，同时清空 `LANGFUSE_PUBLIC_KEY` 和
+`LANGFUSE_SECRET_KEY`，再执行启动脚本。知识服务根据密钥是否存在自动启用，
+因此只修改 `LANGFUSE_ENABLED` 不会停用知识服务上报。
+
 **Q: `./start-all.sh` 卡在 wait_healthy？**
 镜像可能还在拉取。用 `docker pull <IMAGE>` 手动预拉一次再跑脚本。
 

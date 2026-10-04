@@ -18,6 +18,12 @@ services:
       TDAI_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
       MEMORY_PROMPT_MODE: ${MEMORY_PROMPT_MODE:-code}
       STORE_MODE: sqlite
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_HOST: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Core uses a direct OTLP exporter; opt into Langfuse v4 ingestion.
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${LANGFUSE_OTLP_HEADERS-x-langfuse-ingestion-version=4}
     volumes:
       - memory-core-data:/data/tdai-memory
       - ./desktop-gateway.yaml:/data/config/tdai-gateway.yaml:ro
@@ -59,7 +65,11 @@ services:
       LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
       LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
       LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      LLM_STREAM: "true"
       KNOWLEDGE_LLM_BINDING_SYNC: "0"
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     volumes:
       - panel-data:/data/knowledge
     healthcheck:
