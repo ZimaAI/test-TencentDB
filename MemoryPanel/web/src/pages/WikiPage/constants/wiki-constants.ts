@@ -41,13 +41,7 @@ export const SCOPE_LABEL_KEYS: Record<WikiScopeTab, string> = {
 
 export type DetailTab = 'overview' | 'graph' | 'pages' | 'search';
 
-export interface SearchResult {
-  path: string;
-  title: string;
-  snippet: string;
-  score: number;
-  type: string;
-}
+export type { WikiSearchHit as SearchResult } from '@/lib/api/knowledge-api';
 
 export const TYPE_COLORS: Record<string, string> = {
   entity: 'var(--tea-color-bg-brand-default)',

@@ -105,8 +105,20 @@ export interface WikiGraphData {
   communities?: any[];
 }
 
+export interface WikiSearchOptions {
+  hop?: number;
+  decay?: number;
+  minScore?: number;
+}
+
 export interface WikiSearchResult {
-  results: Array<{ path: string; title: string; snippet: string; score: number; type: string }>;
+  results: Array<{
+    path: string; title: string; snippet: string; score: number; type: string;
+    hop?: number;
+    via?: string;
+    related?: Array<{ title: string; path: string; type: string; direction: 'out' | 'in' | 'both' }>;
+  }>;
+  links: Array<{ source: string; target: string; weight: number }>;
   count: number;
 }
 
@@ -176,7 +188,7 @@ export interface KnowledgeClientPort {
 
   // Wiki — 派生视图（仅资产 id 寻址）
   wikiGraph(wikiId: string): Promise<WikiGraphData>;
-  wikiSearch(wikiId: string, query: string, limit?: number, graph?: { hop?: number; decay?: number; minScore?: number }): Promise<WikiSearchResult>;
+  wikiSearch(wikiId: string, query: string, limit?: number, graph?: WikiSearchOptions): Promise<WikiSearchResult>;
 
   // Code-Graph（create/list 带 IdFields；get/sync/delete/查询 仅资产 id 寻址）
   codeGraphCreate(teamId: string, repoUrl: string, branch?: string, userId?: string, repoName?: string): Promise<CodeGraphDetail>;

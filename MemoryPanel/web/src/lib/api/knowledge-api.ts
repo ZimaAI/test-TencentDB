@@ -17,6 +17,29 @@ import i18n from '@/i18n';
 
 const BASE = '/api/v1/knowledge';
 
+export interface WikiSearchOptions {
+  hop?: number;
+  decay?: number;
+  minScore?: number;
+}
+
+export interface WikiSearchHit {
+  path: string;
+  title: string;
+  snippet: string;
+  score: number;
+  type: string;
+  hop?: number;
+  via?: string;
+  related?: Array<{ title: string; path: string; type: string; direction: 'out' | 'in' | 'both' }>;
+}
+
+export interface WikiSearchResponse {
+  results: WikiSearchHit[];
+  count: number;
+  links: Array<{ source: string; target: string; weight: number }>;
+}
+
 // ========================= Envelope =========================
 
 interface Envelope<T = unknown> {
@@ -390,11 +413,10 @@ export const knowledgeApi = {
     pageDelete: (wikiId: string, refs: string[]): Promise<void> =>
       panelPost('/wiki/page/rm', { wiki_id: wikiId, refs }),
 
-    /** 全文搜索 */
-    search: (wikiId: string, query: string, limit?: number): Promise<{
-      results: Array<{ path: string; title: string; snippet: string; score: number; type: string }>;
-    }> =>
-      panelPost('/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20 }),
+    /** BM25 搜索，可选 Wiki 图扩展（顶层参数与 Knowledge API 一致）。 */
+    search: (wikiId: string, query: string, limit?: number, graph?: WikiSearchOptions): Promise<WikiSearchResponse> =>
+      panelPost('/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20,
+        hop: graph?.hop, decay: graph?.decay, minScore: graph?.minScore }),
 
     /** raw 文件列表 */
     rawList: async (wikiId: string): Promise<{ files: Array<{ filename: string; size: number }> }> => {

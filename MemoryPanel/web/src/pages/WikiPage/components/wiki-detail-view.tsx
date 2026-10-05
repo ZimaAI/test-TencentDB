@@ -24,6 +24,7 @@ import { tea } from '@/lib/tea-bridge';
 import { WIKI_ALLOWED_FILE_RE, TYPE_COLORS, TYPE_COLOR_FALLBACK, type DetailTab } from '../constants/wiki-constants';
 import { WikiStatusBadge } from './wiki-ui';
 import { GraphTabContent, PagesTabContent } from './wiki-detail-components';
+import { WikiSearchSettings } from './WikiSearchSettings';
 import type { WikiSourcesStore } from '../hooks/useWikiSources';
 
 export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
@@ -398,13 +399,27 @@ export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
         </TabPanel>
         <TabPanel id="search">
           <div className="_wiki-detail-search">
+            <WikiSearchSettings value={store.graphSettings} onChange={store.setGraphSettings}
+              onReset={store.resetGraphSettings} valid={store.searchSettingsValid} />
             <SearchBox
               value={searchQuery}
               onChange={setSearchQuery}
               onSearch={handleSearch}
               placeholder={t('wiki.detail.search.placeholder')}
             />
+            {store.searchDirty && <Text theme="warning">{t('wiki.detail.search.dirty')}</Text>}
             {searching && <StatusTip status="loading" />}
+            {!searching && store.lastSearch && <div className="_wiki-search-summary" aria-live="polite">
+              <Tag>{(store.lastSearch.options.hop ?? 0) > 0
+                ? t('wiki.detail.search.graphMode', { hop: store.lastSearch.options.hop })
+                : t('wiki.detail.search.bm25Mode')}</Tag>
+              <Text theme="label">{t('wiki.detail.search.breakdown', {
+                direct: searchResults.filter((r) => !r.hop).length,
+                expanded: searchResults.filter((r) => (r.hop ?? 0) > 0).length,
+              })}</Text>
+              {(store.lastSearch.options.hop ?? 0) > 0 && !searchResults.some((r) => (r.hop ?? 0) > 0)
+                && <Text theme="label">{t('wiki.detail.search.noExpansion')}</Text>}
+            </div>}
             {!searching && searchResults.length > 0 && (
               <>
                 <Text theme="label">{t('wiki.detail.search.results', { count: searchResults.length })}</Text>
@@ -433,10 +448,16 @@ export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
                         />
                         <span className="_wiki-detail-search-item-title">{result.title}</span>
                         <Tag size="sm">{result.type}</Tag>
+                        <Tag size="sm" theme={(result.hop ?? 0) > 0 ? 'success' : 'default'}>
+                          {(result.hop ?? 0) > 0 ? t('wiki.detail.search.expanded', { hop: result.hop }) : t('wiki.detail.search.direct')}
+                        </Tag>
                         <Text theme="label" className="_wiki-detail-search-item-score">
-                          {result.score.toFixed(1)}
+                          {Number(result.score.toPrecision(4)).toString()}
                         </Text>
                       </span>
+                      {(result.hop ?? 0) > 0 && result.via && <Text theme="label">
+                        {t('wiki.detail.search.via', { title: result.via })}
+                      </Text>}
                       {result.snippet && (
                         <Text theme="label" className="_wiki-detail-search-item-snippet">
                           {result.snippet}
@@ -447,7 +468,7 @@ export function WikiDetailView({ store }: { store: WikiSourcesStore }) {
                 </div>
               </>
             )}
-            {!searching && searchResults.length === 0 && searchQuery && (
+            {!searching && store.lastSearch && searchResults.length === 0 && (
               <StatusTip status="empty" emptyText={t('wiki.detail.search.empty')} />
             )}
           </div>

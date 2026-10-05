@@ -85,6 +85,33 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+it("expands keyword seeds over one and two hops and applies score decay/threshold", async () => {
+  // Redis (keyword) -> Cache -> Storage. Only Redis contains oldtoken.
+  writeFileSync(join(dir, "wiki/entities/cache.md"), "---\ntitle: Cache\ntype: entity\n---\nCache [[Storage]]");
+  writeFileSync(join(dir, "wiki/entities/storage.md"), "---\ntitle: Storage\ntype: entity\n---\nStorage");
+  mgr.sync(wikiId);
+  const search = async (options: Record<string, number>) => {
+    const response = await wiki("search", { query: "oldtoken", ...options });
+    expect(response.status).toBe(200);
+    return (await response.json()).data;
+  };
+  const plain = await search({});
+  expect(plain.results.map((r: { title: string }) => r.title)).toEqual(["Redis"]);
+  expect(plain.results[0].hop).toBe(0);
+  const one = await search({ hop: 1, decay: 0.5, minScore: 0 });
+  expect(one.results.map((r: { title: string }) => r.title)).toEqual(["Redis", "Cache"]);
+  expect(one.results[1]).toMatchObject({ hop: 1, via: "Redis" });
+  const two = await search({ hop: 2, decay: 0.5, minScore: 0 });
+  expect(two.results.map((r: { title: string }) => r.title)).toEqual(["Redis", "Cache", "Storage"]);
+  expect(two.results[2]).toMatchObject({ hop: 2, via: "Cache" });
+  expect(two.results[1].score).toBeCloseTo(plain.results[0].score * 0.5, 10);
+  expect(two.results[2].score).toBeCloseTo(plain.results[0].score * 0.25, 10);
+  const filtered = await search({ hop: 2, decay: 0.5, minScore: plain.results[0].score * 0.4 });
+  expect(filtered.results.map((r: { title: string }) => r.title)).toEqual(["Redis", "Cache"]);
+  const noSeeds = await wiki("search", { query: "absentuniquetoken", hop: 2, minScore: 0 });
+  expect((await noSeeds.json()).data.results).toEqual([]);
+});
+
 describe.each(["pending", "processing", "failed", "ready"] as const)("published reads while %s", (status) => {
   it("keeps search, graph, list and body available through HTTP and Agent tools", async () => {
     store.updateWikiStatus(serviceId, wikiId, { status });

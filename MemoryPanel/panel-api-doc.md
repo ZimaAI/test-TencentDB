@@ -899,9 +899,15 @@ L0/L1 列表批量删除。**仅资产 Owner**。
 
 ### POST /knowledge/wiki/search
 
-检索 Wiki。
+检索 Wiki。先执行 BM25，`hop > 0` 时沿 Wiki 链接扩展关联页面。
 
-**请求体**：`{ wiki_id: string, query: string, limit?: number }`
+**请求体**：`{ wiki_id: string, query: string, limit?: number, hop?: number, decay?: number, minScore?: number }`
+
+图检索参数均位于请求体顶层：`hop` 为 0–5 的整数，默认 0（仅 BM25）；`decay` 为 0–1 的有限数，默认 0.5；`minScore` 为有限非负数，默认 0.1。非法参数返回 400。`minScore` 使用未归一化的 BM25 分数，仅在图增强模式生效；小语料分数可能很低，可设为 0 观察扩展结果。无 BM25 命中时不进行图扩展，结果仍按分数排序并受 `limit` 限制。
+
+**响应 data**：`{ results, count, links }`。每条结果包含 `path/title/snippet/score/type` 和 `hop`（0 为直接命中）；图扩展项包含 `via`（上一跳页面标题）。`related` 为邻居页面，`links` 为结果间关系；这些关系字段本身不代表启用了图扩展。
+
+页面中的开关和高级设置按实例、用户、Wiki 保存在浏览器中，点击搜索后生效，不修改 Agent 或 MCP 的默认检索策略。
 
 **错误**：`MISSING_WIKI_ID`、`MISSING_QUERY`、`INVALID_USER_KEY`、`FORBIDDEN`、`NOT_TEAM_MEMBER`、`KNOWLEDGE_NOT_FOUND`。
 

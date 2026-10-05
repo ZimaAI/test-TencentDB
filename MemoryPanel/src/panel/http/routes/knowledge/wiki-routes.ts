@@ -207,7 +207,17 @@ export function registerKnowledgeWikiRoutes(api: Hono, deps: PanelDeps): void {
     if ('error' in gate) return gate.error;
     const limit = typeof body.limit === 'number' ? body.limit : undefined;
     const kc = deps.knowledgeClientFactory(ctx.instanceId);
-    return runKs(c, () => kc.wikiSearch(wikiId, query, limit));
+    const { hop, decay, minScore } = body;
+    if (hop !== undefined && (typeof hop !== 'number' || !Number.isInteger(hop) || hop < 0 || hop > 5)) {
+      return respondControlError(c, 400, 'hop must be an integer in 0..5');
+    }
+    if (decay !== undefined && (typeof decay !== 'number' || !Number.isFinite(decay) || decay < 0 || decay > 1)) {
+      return respondControlError(c, 400, 'decay must be a number in 0..1');
+    }
+    if (minScore !== undefined && (typeof minScore !== 'number' || !Number.isFinite(minScore) || minScore < 0)) {
+      return respondControlError(c, 400, 'minScore must be a non-negative number');
+    }
+    return runKs(c, () => kc.wikiSearch(wikiId, query, limit, { hop, decay, minScore }));
   });
 
   // W7 raw/ls — id-only

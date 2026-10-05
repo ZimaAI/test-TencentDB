@@ -15,6 +15,7 @@ import type {
   WikiIngestResult,
   WikiGraphData,
   WikiSearchResult,
+  WikiSearchOptions,
   BatchDeleteResult,
   RawFileEntry,
   PageEntry,
@@ -144,8 +145,9 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
     return this.post('/v3/wiki/graph', { wiki_id: wikiId });
   }
 
-  async wikiSearch(wikiId: string, query: string, limit?: number, graph?: { hop?: number; decay?: number; minScore?: number }): Promise<WikiSearchResult> {
-    return this.post('/v3/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20, ...(graph && Object.keys(graph).length > 0 ? { graph } : {}) });
+  async wikiSearch(wikiId: string, query: string, limit?: number, graph?: WikiSearchOptions): Promise<WikiSearchResult> {
+    return this.post('/v3/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20,
+      hop: graph?.hop, decay: graph?.decay, minScore: graph?.minScore });
   }
 
   async wikiUpdateMeta(wikiId: string, patch: { name?: string; summary?: string | null }): Promise<WikiDetail> {

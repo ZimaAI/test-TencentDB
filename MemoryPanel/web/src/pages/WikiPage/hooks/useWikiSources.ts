@@ -5,11 +5,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { knowledgeApi, wikiProgressPercent, wikiStageLabel, type GraphData, type WikiDetail, type WikiPage } from '@/lib/api/knowledge-api';
+import { useWikiSearch } from './useWikiSearch';
+import { getPanelSession } from '@/lib/panelSession';
 import { useTeams, useAgents } from '@/services';
 import { readAuth } from '@/components/LoginGate';
 import { tea, confirmThenRun } from '@/lib/tea-bridge';
 import { findExistingRawFilenames, formatOverwriteFilenames } from '../utils/wiki-upload-utils';
-import { type DetailTab, type SearchResult, type StatusFilter, type SubView, type ViewMode, type WikiScopeTab } from '../constants/wiki-constants';
+import { type DetailTab, type StatusFilter, type SubView, type ViewMode, type WikiScopeTab } from '../constants/wiki-constants';
 
 export function useWikiSources() {
   const { t } = useTranslation();
@@ -152,9 +154,7 @@ export function useWikiSources() {
   const [readContent, setReadContent] = useState('');
   const [readLoading, setReadLoading] = useState(false);
   const [pageTypeFilter, setPageTypeFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  const wikiSearch = useWikiSearch(selectedWikiId, getPanelSession()?.instanceId ?? '', currentUser, subView === 'detail');
 
   // Add doc（添加文档：文件 / 粘贴 markdown）
   const [showAddDoc, setShowAddDoc] = useState(false);
@@ -224,8 +224,7 @@ export function useWikiSources() {
     setSelectedWikiId('');
     setActiveTab('overview');
     setSelectedPage(null);
-    setSearchQuery('');
-    setSearchResults([]);
+    wikiSearch.resetSearch();
     setPageTypeFilter('all');
     setPages([]);
     setGraphData(null);
@@ -480,8 +479,7 @@ export function useWikiSources() {
     setSelectedWikiId(wikiId);
     setActiveTab('overview');
     setSelectedPage(null);
-    setSearchQuery('');
-    setSearchResults([]);
+    wikiSearch.resetSearch();
     setPageTypeFilter('all');
     // 切换到另一个 wiki 详情时，必须清空上一个 wiki 的详情级数据（页面列表 / 图谱 / 已读正文）。
     // 否则新 wiki 的 fetchDetail 返回前，概览/图谱/页面 tab 会一闪而过上一个 wiki 的内容。
@@ -556,18 +554,7 @@ export function useWikiSources() {
     );
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim() || !selectedWikiId) return;
-    setSearching(true);
-    try {
-      const r = await knowledgeApi.wiki.search(selectedWikiId, searchQuery, 20);
-      setSearchResults((r as { results?: SearchResult[] }).results || []);
-    } catch (e: unknown) {
-      tea.notify.error(e);
-    } finally {
-      setSearching(false);
-    }
-  };
+
 
   // 原始文档列表刷新信号：RawFilesSection 维护自己独立的 state，只在 wikiId 变化时重载；
   // 上传成功后 fetchDetail 只刷新 pages/graph，不会触发它重拉。递增此 key 强制其 reload。
@@ -821,12 +808,7 @@ export function useWikiSources() {
     setReadLoading,
     pageTypeFilter,
     setPageTypeFilter,
-    searchQuery,
-    setSearchQuery,
-    searchResults,
-    setSearchResults,
-    searching,
-    setSearching,
+    ...wikiSearch,
     // add doc
     showAddDoc,
     setShowAddDoc,
@@ -853,7 +835,6 @@ export function useWikiSources() {
     handleReadPage,
     handleDeletePage,
     handleDeleteRaw,
-    handleSearch,
     handleUploadMdBatch,
     handleBatchUpload,
     // computed

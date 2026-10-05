@@ -552,6 +552,38 @@
   gap: 8px;
 }
 
+._wiki-search-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 8px;
+}
+
+._wiki-search-settings-heading,
+._wiki-search-toggle,
+._wiki-search-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+._wiki-search-settings-heading { justify-content: space-between; }
+._wiki-search-toggle, ._wiki-search-settings summary { cursor: pointer; }
+._wiki-search-advanced { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+._wiki-search-field { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+._wiki-search-field input {
+  width: 140px;
+  padding: 6px 8px;
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 4px;
+  background: var(--tea-color-bg-primary-default);
+  color: inherit;
+}
+._wiki-search-invalid { color: var(--tea-color-text-error-default); margin: 0; }
+
 ._wiki-detail-search-item {
   display: flex;
   flex-direction: column;

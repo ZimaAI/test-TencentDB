@@ -408,7 +408,7 @@ paths:
   /wiki/search:
     post:
       tags: [LLM-Wiki]
-      summary: Search wiki pages (BM25 full-text)
+      summary: Search wiki pages (BM25 with optional graph expansion)
       operationId: searchWiki
       requestBody:
         required: true
@@ -987,6 +987,23 @@ components:
         limit:
           type: integer
           default: 20
+        hop:
+          type: integer
+          minimum: 0
+          maximum: 5
+          default: 0
+          description: Graph expansion depth. Zero keeps pure BM25 retrieval.
+        decay:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: Score multiplier for each graph hop.
+        minScore:
+          type: number
+          minimum: 0
+          default: 0.1
+          description: Minimum unnormalized score in graph mode. Zero disables threshold filtering.
 
     # ── Code-Graph Schemas ──
 
