@@ -432,7 +432,7 @@ export class MetadataClient {
    */
   async getAgentFixedAssets(
     agentId: string,
-    opts: { applyVisibilityFilter?: boolean; assetTypes?: string[] } = {},
+    opts: { applyVisibilityFilter?: boolean; assetTypes?: string[]; touchUsage?: boolean } = {},
   ): Promise<AgentFixedAssetDetail> {
     const applyVisibilityFilter = opts.applyVisibilityFilter !== false;
     const assetTypes = opts.assetTypes && opts.assetTypes.length > 0 ? opts.assetTypes : undefined;
@@ -449,6 +449,7 @@ export class MetadataClient {
           limit: FA_PAGE_SIZE,
           offset,
           apply_visibility_filter: applyVisibilityFilter,
+          ...(opts.touchUsage !== undefined ? { touch_usage: opts.touchUsage } : {}),
           ...(assetTypes ? { asset_types: assetTypes } : {}),
         },
       );

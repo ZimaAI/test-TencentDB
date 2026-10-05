@@ -212,6 +212,10 @@ export function createApp(config: ProxyConfig): Hono {
   }
 
   // ── Codex endpoints (must precede generic /:agent/:spaceId routes) ────────
+  // Headless mini-SWE-agent evaluation API, with an explicit knowledge opt-in.
+  app.post("/mini-swe-agent/:spaceId/v1/chat/completions", (c) => handleChatCompletions(c, config));
+  app.post("/mini-swe-agent/:spaceId/chat/completions", (c) => handleChatCompletions(c, config));
+
   // Codex CLI 客户端走 OpenAI Responses API，第三条独立协议路径。
   //
   // 客户端行为差异：codex-rs core/src/client.rs 里 endpoint 常量是 `/responses`

@@ -43,6 +43,7 @@ import { resolveModelId, isModelInPricing } from "./pricing.js";
 import { inspectAndRecord } from "./identity.js";
 import { writeFailedReportRaw } from "./clickhouse.js";
 import { verifyUserKey } from "./auth.js";
+import { MiniSweAgentError, prepareMiniSweAgentRequest } from "./mini-swe-agent.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "./systemUser.js";
 import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { TdaiClient } from "./tdai/client.js";
@@ -476,6 +477,19 @@ export async function handleChatCompletions(
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  const isMiniSweAgent = c.req.path.startsWith("/mini-swe-agent/");
+  if (isMiniSweAgent) {
+    try {
+      body = await prepareMiniSweAgentRequest(c, config, body, {
+        userId: earlyVerify.userId, userKey: earlyApiKey, spaceId: earlySpaceId,
+      });
+    } catch (error) {
+      const status = error instanceof MiniSweAgentError ? error.status : 503;
+      const message = error instanceof MiniSweAgentError ? error.message : "Knowledge dependency unavailable; request was not forwarded";
+      return c.json({ error: { message, type: "invalid_request_error", code: "mini_swe_agent_knowledge_error" } }, status);
+    }
+  }
+
   // ── Optional inbound body dump (dev only) ─────────────────────────
   // 打开: PROXY_DEBUG_DUMP_INBOUND=/tmp/proxy-inbound
   // 每个入站请求落一个文件,方便排查客户端 replay 时到底带没带某个字段。
@@ -756,6 +770,8 @@ export async function handleChatCompletions(
   if (_dshHeadless) {
     console.log(`[request-classify] session=${sessionKey} agent=dsh headless/no-preset (no ask_user_question tool) → bypass session-init, direct passthrough`);
   }
+  // mini-SWE-agent has a separate, read-only knowledge path for A/B runs.
+  const skipAgentPipeline = isAuxiliary || _dshHeadless || isMiniSweAgent;
 
   // ── Client capabilities detection ─────────────────────────────────────────
   // 探测客户端"能否响应 proxy 发起的 fake ask tool_call"。
@@ -780,7 +796,7 @@ export async function handleChatCompletions(
   // 直接返回"不支持"文案。
   const _headerOnlyAgents = new Set(["hermes", "openclaw"]);
   const _noFormAgent = _headerOnlyAgents.has(agentSource) || _dshHeadless;
-  if (!isAuxiliary && _noFormAgent) {
+  if (!isMiniSweAgent && !isAuxiliary && _noFormAgent) {
     const { isSessionResetCommand } = await import("./mem-command/pre-intercept.js");
     if (isSessionResetCommand(body as Record<string, unknown>, agentSource)) {
       const { buildMemResponse } = await import("./mem-command/response-builder.js");
@@ -799,7 +815,7 @@ export async function handleChatCompletions(
       });
     }
   }
-  if (!isAuxiliary && !_dshHeadless && !_headerOnlyAgents.has(agentSource)) {
+  if (!skipAgentPipeline && !_headerOnlyAgents.has(agentSource)) {
     const { isSessionResetCommand } = await import("./mem-command/pre-intercept.js");
     if (isSessionResetCommand(body as Record<string, unknown>, agentSource)) {
       const { parseMemCommand } = await import("./mem-command/index.js");
@@ -850,11 +866,11 @@ export async function handleChatCompletions(
   // ── Session Init (before injection pipeline) ─────────────────────────────
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
-  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless;
+  let injectedSkipped = !conversationId || skipAgentPipeline;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamName?: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
-  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless) {
+  if (config.sessionInit?.enabled && conversationId && !skipAgentPipeline) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
@@ -1027,7 +1043,7 @@ export async function handleChatCompletions(
       // fallback 语义：sessionJustRegistered 在此已定型（见上文 L786），
       // checkFirst 场景可安全复用。
       let memCommandPending = false;
-      if (!isAuxiliary && !_dshHeadless) {
+      if (!skipAgentPipeline) {
         try {
           const { parseMemCommand } = await import("./mem-command/index.js");
           let peek = parseMemCommand(body as Record<string, unknown>, agentSource);
@@ -1166,7 +1182,7 @@ export async function handleChatCompletions(
   //
   // 请求分类：OpenAI 协议不做 CC 的 fork/sidequery 分流（handler.ts 没接 CC
   // routing），所有请求都视为 main —— 与 codebuddy adapter classifyRequest 一致。
-  if (!isAuxiliary && !_dshHeadless) {
+  if (!skipAgentPipeline) {
     const { parseMemCommand, executeMemCommand, buildMemResponse, extractSimpleMessages, truncateArgs } = await import("./mem-command/index.js");
     // 常规检测：最后一条 user message
     let memCmd = parseMemCommand(body as Record<string, unknown>, agentSource);
@@ -1286,7 +1302,7 @@ export async function handleChatCompletions(
   }
 
   // aux 请求(compaction/title)/ dsh headless(无 UI 无 preset)不写 L0 —— 直接透传
-  const tdaiClient = isAuxiliary || _dshHeadless || assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
+  const tdaiClient = skipAgentPipeline || assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
   const tdaiIdentity = injectedSkipped
     ? null
     : deriveTdaiIdentity({
@@ -1588,6 +1604,12 @@ export async function handleChatCompletions(
       respHeaders.set(k, v);
     }
   }
+  if (isMiniSweAgent) {
+    for (const name of ["x-tdai-knowledge", "x-tdai-knowledge-count"]) {
+      const value = c.res.headers.get(name);
+      if (value !== null) respHeaders.set(name, value);
+    }
+  }
 
   // Upstream request id from response header (tokenhub / OpenAI-compatible
   // gateways set `x-request-id`). Used for cross-system tracing/audit.
@@ -1674,7 +1696,7 @@ export async function handleChatCompletions(
       sessionKeyForSkill: sessionKey,
       agentSource,
       isAuxiliary,
-      isDshHeadless: _dshHeadless,
+      skipAgentPipeline,
       sessionInfo,
       lf,
       spaceId,
@@ -1890,7 +1912,7 @@ export async function handleChatCompletions(
   // Skill extract trigger — count tool calls + buffer conversation.
   // 同步 await：直到 store 落盘再继续，保证下一轮跨节点读到最新数据。
   // aux 请求(compaction/title)/dsh headless 不触发 skill 提取 —— 保持归档 buffer 语义纯净
-  if (!isAuxiliary && !_dshHeadless && isExtractionAllowed(config, "skill")) {
+  if (!skipAgentPipeline && isExtractionAllowed(config, "skill")) {
     await triggerSkillExtractIfReady({
       config,
       sessionKey,
@@ -1901,7 +1923,7 @@ export async function handleChatCompletions(
       protocol: "openai",
       assetCapabilities,
     });
-  } else if (!isAuxiliary && !_dshHeadless) {
+  } else if (!skipAgentPipeline) {
     logExtractionSkipped(config, "skill", sessionKey);
   }
 
@@ -1996,9 +2018,8 @@ interface TapContext {
   /** True when this request was classified as auxiliary (compaction/title-gen) —
    * downstream L0/skill extract paths must skip to keep buffer semantics clean. */
   isAuxiliary: boolean;
-  /** True when this dsh request came from CLI headless / no-preset (no ask_user_question
-   * in tools) — behaves like aux for downstream side-effects. */
-  isDshHeadless: boolean;
+  /** Auxiliary, headless or mini-SWE-agent evaluation requests must not write memory/skills. */
+  skipAgentPipeline: boolean;
   sessionInfo: Record<string, unknown> | null | undefined;
   /** Langfuse turn-trace context (trace = one turn). */
   lf: LangfuseTurnContext;
@@ -2317,7 +2338,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
     // Skill extract trigger — after stream finalization.
     // 同步 await：直到 store 落盘再继续，保证下一轮跨节点读到最新数据。
     // aux 请求(compaction/title)/dsh headless 跳过 skill 触发,保持归档 buffer 语义纯净。
-    if (!ctx.isAuxiliary && !ctx.isDshHeadless && isExtractionAllowed(ctx.config, "skill")) {
+    if (!ctx.skipAgentPipeline && isExtractionAllowed(ctx.config, "skill")) {
       await triggerSkillExtractIfReady({
         config: ctx.config,
         sessionKey: ctx.sessionKeyForSkill,
@@ -2329,7 +2350,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
         assetCapabilities: ctx.assetCapabilities,
         toolCallCountOverride: toolCallAccumulators.size,
       });
-    } else if (!ctx.isAuxiliary && !ctx.isDshHeadless) {
+    } else if (!ctx.skipAgentPipeline) {
       logExtractionSkipped(ctx.config, "skill", ctx.sessionKeyForSkill);
     }
 
